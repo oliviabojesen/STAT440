@@ -1,0 +1,516 @@
+---
+title: "Statistical Consulting Center Report for Sarah Snyder"
+output: html_document
+author: "Olivia Bojesen, Noah Coleman, Amber Duevel, Benjamin Ellingworth, Anna Koblitz, Simone Zautis, Dr. Douglas Baumann"
+date: "2023-09-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, include=FALSE)
+```
+
+## Data Import and Formatting
+
+```{r libraries}
+library(readxl)
+library(multcomp)
+```
+
+```{r data_import}
+raw <- read_xlsx("Career+Advancement+Aspirations_August+22,+2023_14.05.xlsx", col_names = FALSE, skip=2)
+raw_names <- read_xlsx("Career+Advancement+Aspirations_August+22,+2023_14.05.xlsx", col_names = FALSE, n_max=1)
+names(raw) <- raw_names[1,]
+```
+
+```{r data_formatting}
+library(tidyverse)
+# Eliminate non-questions
+raw_Qs <- raw %>% dplyr::select(starts_with("Q"))
+
+#raw_Qs <- raw %>% dplyr::select(`Q2_1`:`Q2_24`)
+
+#Format questions as numeric when appropriate:
+raw_Qs1 <- raw_Qs %>% mutate(across(c(Q2_1:Q2_24, Q4_1:Q4_9, Q7, Q13), ~ as.numeric(.))) 
+
+#Q5 and Q5_8_TEXT fixing
+#table(raw_Qs$Q5). #641 observations, 612 Cisgender Woman or Female or Feminine; 7 more with other categories; 5 of 5 free responses were female-indicating. 97% were in this category, so we may need to ignore this question; worth asking the client! No research questions use this information, though. Remove these columns for now.
+
+#Q3 is text-based, and we do not need to analyze this. Remove this column.
+
+#Q6_9_TEXT has one non-missing value ("Mixed race"). Q6 allowed multiple selections. Need to address this!
+#85% indicated White or Caucasian or European American only. 89% indicated White, etc.. 
+
+raw_Qs_tmp <- raw_Qs1 %>% dplyr::select(-Q5, -Q5_8_TEXT, -Q3, -Q6_9_TEXT)
+
+raw_Qs_race <- raw_Qs_tmp %>% mutate(WCEA = case_when(str_detect(Q6, "White") ~ 1, TRUE ~ 0),
+                          Nonwhite = case_when(Q6 == "White or Caucasian or European American" ~ 0, TRUE ~ 1)) 
+#Question recoding: CAS-R questions 2, 4, 12, 20, and 22 need to be reverse-coded
+#These are Q2_* questions. They are scored on a 0-4 basis. Subtract scores from 4 to reverse
+#There is one question in MTL that needs to be reversed. Similar approach. (Q4_3)
+
+raw_Qs_reverse <- raw_Qs_race %>% mutate(Q2_2 = 4 - Q2_2,
+                                         Q2_4 = 4 - Q2_4,
+                                         Q2_12 = 4 - Q2_12,
+                                         Q2_20 = 4 - Q2_20,
+                                         Q2_22 = 4 - Q2_22,
+                                         Q4_3 = 4 - Q4_3)          
+
+#Need to figure out "institution currently worked at" using information from the Q16_1:Q16_7 responses
+#Combine low response categories. To undo this, uncomment the lines in case_when() below
+raw_Qs_institution <- raw_Qs_reverse %>% 
+  mutate(Q16_Institution = case_when(str_detect(Q16_1, "I currently work at") ~ "Public, 4 year, not for profit",
+                                     str_detect(Q16_2, "I currently work at") ~ "Private, 4 year, not for profit",
+                                     #str_detect(Q16_3, "I currently work at") ~ "Private, 4 year, for profit",
+                                     str_detect(Q16_4, "I currently work at") ~ "Public, 2 year, not for profit",
+                                     #str_detect(Q16_5, "I currently work at") ~ "Private, 2 year, not for profit",
+                                     #str_detect(Q16_6, "I currently work at") ~ "Private, 2 year, for profit",
+                                     TRUE ~ "Other")) %>%
+  dplyr::select(-c(`Q16_1`:`Q16_7_TEXT`))
+  
+#Group low-count Q8 Class categories together; do same for Q16 current position
+raw_Qs_class <- raw_Qs_institution %>% 
+  mutate(Q8 = case_when(Q8 %in% c("Lower Class/Poor", "Working Class") ~ "Poor - Working Class",
+                        Q8 %in% c("Upper Class", "Upper Middle Class") ~ "Upper Middle - Upper Class",
+                        TRUE ~ Q8),
+         Q16 = case_when(Q16 %in% c("Executive (e.g.: title of Vice Chancellor/President or higher)", "Senior Level (e.g.: supervise department directors, report to Vice Chancellor/President or higher)") ~ "Senior/Executive Level",
+                         Q16 == "Mid Level (e.g. director of a department; supervise entry level professionals, etc)" ~ "Mid Level",
+                         TRUE ~ "Entry Level"))
+
+#Convert Q11 to highest level achieved based on reported categories if more than one selected
+#Combine Associates Degree and High schoold diploma due to low counts
+raw_Qs_education <- raw_Qs_class %>% 
+  mutate(Q11 = case_when(Q11 %in% c("Associates Degree,Bachelors Degree", "High school diploma,Bachelors Degree") ~ "Bachelors Degree",
+                         Q11 %in% c("High school diploma,Associates Degree", "Associates Degree", "High school diploma") ~ "HS/Associates Degree",
+                         TRUE ~ Q11))
+
+#Convert Q12 to combine yes categories and no categories
+raw_Qs_further <- raw_Qs_education %>% 
+  mutate(Q12 = case_when(Q12 %in% c("No", "No,Uncertain") ~ "No",
+                         Q12 == "Uncertain" ~ "Uncertain",
+                         TRUE ~ "Yes"))
+
+#Q14 has way too many possible responses. Need to talk to client about this question and how to handle it.
+
+#Q15 has reasonable spread in categories. "Other" category isn't needed
+raw_Qs_future <- raw_Qs_further %>% dplyr::select(-Q15_6_TEXT)
+
+#Summarize scales into total score (both scales, Q2 and Q4) and subscale score (for CAS-R)
+#Below are the numbers corresponding to each scale. The reverse scored items have an asterisk (already recoded above) 
+#Achievement Aspiration items: 3, 8, 9, 13, 17, 20*, 21, 22* 
+#Leadership Aspiration items: 1, 2*, 4*, 5, 7, 12*, 15, 24 
+#Educational Aspiration items: 6, 10, 11, 14, 16, 18, 19, 23
+raw_Qs_scales <- raw_Qs_future %>% 
+  mutate(Achievement = Q2_3 + Q2_8 + Q2_9 + Q2_13 + Q2_17 + Q2_20 + Q2_21 + Q2_22,
+         Leadership = Q2_1 + Q2_2 + Q2_4 + Q2_5 + Q2_7 + Q2_12 + Q2_15 + Q2_24,
+         Educational = Q2_6 + Q2_10 + Q2_11 + Q2_14 + Q2_16 + Q2_18 + Q2_19 + Q2_23,
+         CASR = Achievement + Leadership + Educational,
+         MTL = Q4_1 + Q4_2 + Q4_3 + Q4_4 + Q4_5 + Q4_6 + Q4_7 + Q4_8 + Q4_9)
+
+#remove the "prefer to not respond" people from the analysis
+#make a separate category for them, then remove them in the analysis chunk
+raw_Qs_races <- raw_Qs_scales %>% 
+  mutate(Factor_Race = case_when(Q6 == 'White or Caucasian or European American' ~ 'White or Caucasian or European American',
+                                   str_detect(Q6, 'African American or Black,Prefer not to respond') ~ 'African American or Black',
+                                   str_detect(Q6, ',') ~ 'Multiracial',
+                                   str_detect(Q6, 'African American or Black') ~ 'African American or Black',  
+                                   #str_detect(Q6, 'American Indian or Alaska Native or Indigenous or First Nations') ~ 'American Indian or Alaska Native or Indigenous or First Nations',
+                                   str_detect(Q6, 'Asian or Asian American') ~ 'Asian or Asian American',
+                                   str_detect(Q6, 'Hispanic or Latinx or Latina or Latino') ~ 'Hispanic or Latinx or Latina or Latino',
+                                   #str_detect(Q6, 'Native Hawaiian or Pacific Islander') ~ 'Native Hawaiian or Pacific Islander',
+                                 str_detect(Q6, 'Prefer not to respond') ~ 'Prefer not to respond',
+                                   TRUE ~ 'Other'))
+```
+
+```{r data_selection}
+#Choose the variables for the analysis portion. Use reformatted variables by default.
+#Rename variables for simplicity
+snyder <- raw_Qs_races %>% rename(Race = Q6,
+                                   Age = Q7,
+                                   Class = Q8,
+                                   Level = Q16,
+                                   Inst_Size = Q10,
+                                   Degree = Q11,
+                                   Further_Ed = Q12,
+                                   Years = Q13,
+                                   Area = Q14,
+                                   Future = Q15,
+                                   Inst_Type = Q16_Institution)
+snyder2 <- snyder
+```
+
+The following formatting and recategorizations were made:
+
+
+- Q2: Questions 2, 4, 12, 20, and 22 were reverse coded as instructed; individual questions were summed together to create the Achievement, Leadership, and Educational Aspiration subscores, as well as an overall CAS-R score.
+- Q3: This was a free-response question; we were asked to ignore this question.
+- Q4: One item (Q4_) was reverse coded as instructed; all Q4_* questions were summed to create MTL score
+- Q5 and Q5_8_Text: There were 641 total observations, of which 612 responded Cisgender Woman or Female or Feminine; 7 more with other categories; 5 of 5 free responses were female-indicating. 97% were in this category, so this question does not have significant information. Since no research questions use this information, we chose to remove these columns for now.
+- Q6: Respondents could choose all that apply; Additional variables were created:
+  - Indicate if a respondent selected "White or Caucasian or European American" (WCEA) and if a respondent indicated any response other than WCEA (Nonwhite). There are some respondents that indicated both WCEA and Nonwhite.
+  - Factor_Race: Respondents with more than one selection were labeled "Multiracial"; low count categories were grouped together as "Other" (Native Hawaiian or Pacific Islander; American Indian or Alaska Native or Indigenous or First Nations; Prefer not to respond)
+- Q7: Renamed to "Age"
+- Q8: Classes "Lower Class/Poor" and "Working Class" were combined into "Poor - Working Class"; "Upper Class" and "Upper Middle Class" were combined into "Upper Middle - Upper Class". "Lower Middle Class" and "Middle Class" were left separate; variable renamed to "Class".
+- Q10: Renamed to "Inst_Size" to indicate Institution Size
+- Q11: Converted to highest level achieved based on reported categories if more than one selected; renamed to "Degree"
+- Q12: Recategorized into "No", "Uncertain", and "Yes" categories; renamed to "Future_Ed".
+- Q13: Renamed to "Years".
+- Q14: Renamed to "Area". See below for re-categorization results for this variable.
+- Q15: Renamed to "Future".
+- Q16: "Executive" and "Senior Level" responses were combined into "Senior/Executive Level".
+
+
+
+
+## Data Analysis and Research Questions
+
+### Question 1: Do women-identifying student affairs professionals working in Wisconsin seek advancement to leadership positions? Summary statistics of CAS-R and Subscales.
+
+```{r data_summaries, include=TRUE}
+#Client statement: Q1: Do women-identifying student affairs professionals working in Wisconsin seek advancement to leadership positions? 1. CAS-R score high, low, median, average; 2. CAS-R scores of breakout groups – achievement, education, leadership
+
+#After clarifying with client, she is looking for summary statistics for the CAS-R questions. These are Q2_* questions, with Achievement, Leadership, and Educational Aspiration subscores, as well as an overall CAS-R score.
+
+#Reference the Yuko Iwai .rmd file for an example of kable and kableExtra for a nicely formatted table.
+
+sum.Achievement <- summary(snyder$Achievement)
+sum.Leadership <- summary(snyder$Leadership)
+sum.Educational <- summary(snyder$Educational)
+sum.CASR <- summary(snyder$CASR)
+
+sds <- c(sd(snyder$Achievement, na.rm = TRUE), sd(snyder$Leadership, na.rm = TRUE), sd(snyder$Educational, na.rm = TRUE), sd(snyder$CASR, na.rm = TRUE))
+
+sum.df <- data.frame(unclass(sum.Achievement), unclass(sum.Leadership), unclass(sum.Educational), unclass(sum.CASR))
+colnames(sum.df) <- c("Achievement", "Leadership", "Educational", "CASR")
+
+sum.df <- rbind(sum.df, sds)
+rownames(sum.df)[rownames(sum.df) == "8"] <- "SD"
+
+library(kableExtra)
+sum.df %>%
+  kbl(digits=2) %>%
+  kable_styling()
+
+```
+
+### Question 2: What effects, if any, do intersecting identities, such as age, race, and social class of origin, have on the career advancement aspirations of women-identifying student affairs professionals working in Wisconsin?
+
+```{r casr_demographics}
+#Client statement: Q2: What effects, if any, do intersecting identities, such as age, race, and social class of origin, have on the career advancement aspirations of women-identifying student affairs professionals working in Wisconsin? 1. CAS-R and age, race, social class; 2. CAS-R, MTL
+
+#The client initially wanted a correlation table. After clarifying her research question, she agreed to consider a linear regression (or series of regressions). We could consider a multivariate regression (each CAS-R subscale is a response), but separate regressions are probably fine. She initially listed these questions separately, but we can combine them.
+
+snyder_tmp <- snyder %>% filter(Factor_Race != "Prefer not to respond")
+demo_mod_casr1 <- lm(CASR ~ Age + Factor_Race + Class + MTL, data=snyder_tmp)
+summary(demo_mod_casr1)
+anova(demo_mod_casr1) #MTL is significant (estimate: 1.65, t=13.168, p<0.001); no other variables significant 
+demo_mod_casr2 <- lm(CASR ~ Age + WCEA + Nonwhite + Class + MTL, data=snyder_tmp)
+anova(demo_mod_casr2)
+
+demo_mod_ach1 <- lm(Achievement ~ Age + Factor_Race + Class + MTL, data=snyder_tmp)
+demo_mod_ach2 <- lm(Achievement ~ Age + WCEA + Nonwhite + Class + MTL, data=snyder_tmp)
+anova(demo_mod_ach1)
+anova(demo_mod_ach2); summary(demo_mod_ach2)
+#MTL is significant (estimate: 0.496, t=12.067, p<0.001); no other variables significant 
+
+snyder_tmp$Class <- fct_relevel(snyder_tmp$Class, "Poor - Working Class")
+demo_mod_lead1 <- lm(Leadership ~ Age + Factor_Race + Class + MTL, data=snyder_tmp)
+demo_mod_lead2 <- lm(Leadership ~ Age + WCEA + Nonwhite + Class + MTL, data=snyder_tmp)
+summary(anova(demo_mod_lead1))
+anova(demo_mod_lead2); summary(demo_mod_lead2)
+#emmeans(demo_mod_lead2, pairwise ~ Class) #Nothing significant in post-hoc
+post.hoc <- glht(demo_mod_lead2, linfct = mcp(Class = 'Tukey'))
+summary(post.hoc) #Nothing significant in post-hoc
+#Age: estimate: -0.047, F=4.86, p-value=0.02783
+#MTL: estimate=0.711, F=148.93, p<0.001
+
+  
+demo_mod_ed1 <- lm(Educational ~ Age + Factor_Race + Class + MTL, data=snyder)
+demo_mod_ed2 <- lm(Educational ~ Age + WCEA + Nonwhite + Class + MTL, data=snyder_tmp)
+anova(demo_mod_ed2); summary(demo_mod_ed2)
+#WCEA: estimate=-3.492, F=5.67, p-value = 0.0176
+#MTL: estimate=0.426, F=68.65, p-value < 0.001
+```
+
+Linear regression models were fit to investigate the relationship between CAS-R scores and identity variables (age, race, social class, and MTL). Factor_Race and WCEA/Nonwhite variable combinations were used separately, but models based on WCEA/Nonwhite typically yielded more interesting results, likely due to sample size constraints in each race category. We found the following results:
+
+1. Using overall CAS-R score as the target (response variable), we found a significant association with MTL score. For every additional point scored on MTL, overall CAS-R score increases by 1.65 points, on average (F=175.87, p-value<0.001). The other variables considered were not significantly associated with CAS-R score. This pattern was consistent between the WCEA/Nonwhite and Factor_Race approaches to the Race variable. 
+2. Using the Achievement subscore as the target (response variable), we found a significant association with MTL score. For every additional point scored on MTL, Achievement subscore increases by 0.496 points, on average (F=145.6028, p-value<0.001). The other variables considered were not significantly associated with Achievement score. This pattern was consistent between the WCEA/Nonwhite and Factor_Race approaches to the Race variable.
+3. Using the Leadership subscore as the target (response variable), we found a significant association with MTL score. For every additional point scored on MTL, Leadership subscore increases by 0.711 points, on average (F=148.9288, p-value<0.001). Age was also significantly associated with Leadership score. For every additional year in Age, Leadership subscore decreases by 0.047 points, on average (F=4.89, p-value=0.027). These patterns were consistent between the WCEA/Nonwhite and Factor_Race approaches to the Race variable. The Class variable was more interesting. Overall, we found that Class is associated with Leadership subscore (F=2.65, p-value=0.048) when using the WCEA/Nonwhite model; however, we did not find any Class-to-Class comparison significant. When using the Factor_Race model, Class was not significant (F=2.5904, p-value=0.052). Overall, we hesitate to draw any conclusions about the relationship between Class and Leadership score. Race was not significant in either model (WCEA/Nonwhite or Factor_Race).
+4. Using the Educational subscore as the target (response variable), we found a significant association with MTL score. For every additional point scored on MTL, Educational subscore increases by 0.426 points, on average (F=68.65, p-value<0.001). We also found a significant relationship in whether the respondent selected WCEA for race. On average, WCEA respondents scored 3.492 points lower on the Educational subscore compared to those who did not select WCEA (F=5.67, p=0.0175). The other variables considered were not significantly associated with Achievement score. This pattern was not consistent with Factor_Race approaches to the Race variable, though.
+
+### Question 3: What effects, if any, do work factors of years in profession, institutional type, and functional area have on the career aspirations of women-identifying student affairs professionals working in Wisconsin?
+
+```{r include=FALSE}
+# Re-code functional area
+
+# Remove commas from "Campus Religious, Secular, or Spiritual Programs"
+snyder$Area <- str_replace_all(snyder$Area, "Campus Religious, Secular, or Spiritual Programs", "Campus Religious Secular or Spiritual Programs")
+
+area_list <- str_split(snyder$Area, ",")
+unique_areas <- unique(unlist(area_list))
+
+# Create df with functional areas as column names
+area_mat <- matrix(ncol = length(unique_areas), nrow = nrow(snyder))
+area_df <- as.data.frame(area_mat)
+colnames(area_df) <- unique_areas
+
+# Remove NA column
+ area_df <- area_df %>%
+  dplyr::select(-3)
+ 
+# Filling in the df
+
+for (i in 1:nrow(snyder)) {
+  for (j in 1:ncol(area_df)) {
+
+    if (grepl(colnames(area_df)[j], snyder$Area[i])) {
+      area_df[i,j] <- 1
+    } else {
+      area_df[i,j] <- 0
+    }
+  }
+}
+
+snyder <- cbind(snyder, area_df)
+```
+
+```{r casr_employment, include=FALSE}
+#Client statement: Q3: What effects, if any, do work factors of years in profession, institutional type, and functional area have on the career aspirations of women-identifying student affairs professionals working in Wisconsin?  1. CAS-R and years in prof, institutional type, functional area, institutional size; 2. CAS-R and degree attained, degree advancement plans, 5 year plan
+summary(lm(CASR ~ ., data = snyder[,-c(1:49, 51)]))
+summary(lm(Achievement ~ ., data = snyder[,-c(1:46, 48:51)]))
+summary(lm(Leadership ~ ., data = snyder[,-c(1:47, 49:51)]))
+summary(lm(Educational ~ ., data = snyder[,-c(1:48, 50:51)]))
+
+#When investigating the relationships between functional area and CASR scores, MTL scores, and breakout group scores (Achievement, Leadership, and Educational), we see that there isn't significant evidence of a relationship for any of these (all p-values > 0.05). However, the relationship between leadership and functional area had the lowest p-value with 0.0736. Using a significance level of 0.1 would suggest a significant relationship between leadership and functional area. Each regression also has a low R-squared value indicating that functional area does not explain much of the variation in any of these scores. Overall, over half of the functional areas had less than 10 observations and 40% had less than 5 observations. Due to the small sample sizes among so many categories, we aren't able to draw the most meaningful and reliable conclusions from the data. Using fewer categories would yield larger groups and more accurate results.
+```
+
+
+
+```{r}
+
+# Re-Re-code functional area
+
+# Remove commas from "Campus Religious, Secular, or Spiritual Programs"
+snyder2$Area <- str_replace_all(snyder$Area, "Campus Religious, Secular, or Spiritual Programs", "Campus Religious Secular or Spiritual Programs")
+
+area_list <- str_split(snyder$Area, ",")
+unique_areas <- unique(unlist(area_list))
+
+# Create df with functional areas as column names
+area_mat <- matrix(ncol = length(unique_areas), nrow = nrow(snyder))
+area_df <- as.data.frame(area_mat)
+colnames(area_df) <- unique_areas
+
+# Remove NA column
+ area_df <- area_df %>%
+  dplyr::select(-3)
+ 
+# Filling in the df
+
+for (i in 1:nrow(snyder)) {
+  for (j in 1:ncol(area_df)) {
+
+    if (grepl(colnames(area_df)[j], snyder$Area[i])) {
+      area_df[i,j] <- 1
+    } else {
+      area_df[i,j] <- 0
+    }
+  }
+}
+ 
+# Check number of people in each functional area
+area_df$Other <- as.numeric(rowSums(area_df[,(colSums(area_df)<10)])>0)
+area_df <- area_df[,-which(colSums(area_df)<10)]
+ 
+snyder2 <- cbind(snyder2, area_df)
+
+```
+
+Due to rare occurences having large effects in statistical modeling, low count categories (n<10) of Functional Area were grouped into a single "Other" category. This resulted in the following functional areas: 
+
+`r names(area_df)`. 
+
+Using these categories, we fit linear regression models predicting overall CAS-R scores and three subscale scores (Achievement, Leadership, Educational).  
+
+```{r include=FALSE}
+#Client statement: Q3: What effects, if any, do work factors of years in profession, institutional type, and functional area have on the career aspirations of women-identifying student affairs professionals working in Wisconsin?  1. CAS-R and years in prof, institutional type, functional area, institutional size; 2. CAS-R and degree attained, degree advancement plans, 5 year plan
+snyder_emp <- snyder2 %>% dplyr::select(CASR, Achievement, Leadership, Educational, Years, Inst_Type, Inst_Size, Degree, Further_Ed, Future, names(area_df))
+casr_mod <- lm(CASR ~ ., data = snyder_emp[,-c(2:4)])
+anova(casr_mod)
+
+snyder_emp$Further_Ed <- as.factor(snyder_emp$Further_Ed)
+
+#post.hoc <- glht(casr_mod, linfct = mcp(Further_Ed = 'Tukey'))
+#emmeans(casr_mod, pairwise ~ Further_Ed) #Nothing significant in post-hoc
+
+anova(lm(Achievement ~ ., data = snyder_emp[,-c(1, 3, 4)]))
+anova(lm(Leadership ~ ., data = snyder_emp[,-c(1, 2, 4)]))
+anova(lm(Educational ~ ., data = snyder_emp[,-c(1:3)]))
+
+results_frame <- bind_cols(as.matrix(round(anova(lm(CASR ~ ., data = snyder_emp[,-c(2:4)]))[3:6,4:5],2)),
+as.matrix(round(anova(lm(Achievement ~ ., data = snyder_emp[,-c(1, 3, 4)]))[3:6,4:5],2)),
+as.matrix(round(anova(lm(Leadership ~ ., data = snyder_emp[,-c(1, 2, 4)]))[3:6,4:5],2)),
+as.matrix(round(anova(lm(Educational ~ ., data = snyder_emp[,-c(1:3)]))[3:6,4:5],2)))
+names(results_frame) <- c("CASR F", "CASR p", "Ach. F", "Ach. p", "Lead. F", "Lead. p", "Ed. F", "Ed. p")
+results_names <- row.names(round(anova(lm(Achievement ~ ., data = snyder_emp[,-c(1, 3, 4)]))[3:6,4:5],2))
+results_df <- bind_cols(Variable=results_names, results_frame)
+
+```
+
+Years in profession, Institution Type, and Functional area were typically not significantly related to CAS-R or CAS-R subscale scores, except for those described below. Please note that given the large number of functional areas (21, including the "Other" category), we expect some false positives due to random chance. Overall, we do not feel comfortable assigning any significance to these results based on our analyses:
+
+- For Achievement: "Housing & Residence Life" functional area was associated with a 1.6973 point decrease in Achievement score  (t=-2.334, p-value=0.019903). 
+- For Leadership: "Academic Advising" functional area was associated with a 1.6990 decrease in Leadership score (t=-1.994, p=0.046612).
+- For Leadership: "Collegiate Recreation Programs" functional area was associated with a 6.2907 increase in Leadership score (t=2.876, p=0.004174).
+
+The other predictor variables considered were categorical variables, each with several categories. The table below provides the test statistics and p-values for each of these variables, for each target (response) variable (CAS-R, Achievement, Leadership, Educational). Columns represent the test statistic (F) and p-values for each target, while rows represent the remaining predictor variables.
+
+```{r include=TRUE}
+library(kableExtra)
+results_df %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### CAS-R
+We've broken these relationships down even further for the CAS-R response specifically. Rather than reporting a very large number of multiple comparisons, we are presenting the average (and standard deviation) CAS-R scores for each level of the variables above. 
+
+```{r categorical_breakdowns, include=TRUE}
+snyder_emp %>% group_by(Inst_Size) %>% drop_na() %>% summarize(Average=round(mean(CASR, na.rm=TRUE),2), `Standard Deviation`=round(sd(CASR, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Degree) %>% drop_na() %>% summarize(Average=round(mean(CASR, na.rm=TRUE),2), `Standard Deviation`=round(sd(CASR, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Further_Ed) %>% drop_na() %>% summarize(Average=round(mean(CASR, na.rm=TRUE),2), `Standard Deviation`=round(sd(CASR, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Future) %>% drop_na() %>% summarize(Average=round(mean(CASR, na.rm=TRUE),2), `Standard Deviation`=round(sd(CASR, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### Achievement: 
+Similar tables can be produced for each of the subscales. For Achievement, we have:
+
+```{r ach_breakdowns, include=TRUE}
+snyder_emp %>% group_by(Inst_Size) %>% drop_na() %>% summarize(Average=round(mean(Achievement, na.rm=TRUE),2), `Standard Deviation`=round(sd(Achievement, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Degree) %>% drop_na() %>% summarize(Average=round(mean(Achievement, na.rm=TRUE),2), `Standard Deviation`=round(sd(Achievement, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Further_Ed) %>% drop_na() %>% summarize(Average=round(mean(Achievement, na.rm=TRUE),2), `Standard Deviation`=round(sd(Achievement, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Future) %>% drop_na() %>% summarize(Average=round(mean(Achievement, na.rm=TRUE),2), `Standard Deviation`=round(sd(Achievement, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### Leadership:
+
+```{r lead_breakdowns, include=TRUE}
+snyder_emp %>% group_by(Inst_Size) %>% drop_na() %>% summarize(Average=round(mean(Leadership, na.rm=TRUE),2), `Standard Deviation`=round(sd(Leadership, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Degree) %>% drop_na() %>% summarize(Average=round(mean(Leadership, na.rm=TRUE),2), `Standard Deviation`=round(sd(Leadership, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Further_Ed) %>% drop_na() %>% summarize(Average=round(mean(Leadership, na.rm=TRUE),2), `Standard Deviation`=round(sd(Leadership, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Future) %>% drop_na() %>% summarize(Average=round(mean(Leadership, na.rm=TRUE),2), `Standard Deviation`=round(sd(Leadership, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+```
+
+
+#### Educational: 
+
+```{r ed_breakdowns, include=TRUE}
+snyder_emp %>% group_by(Inst_Size) %>% drop_na() %>% summarize(Average=round(mean(Educational, na.rm=TRUE),2), `Standard Deviation`=round(sd(Educational, na.rm=TRUE),2)) %>%
+  kbl() %>%
+    kable_styling()
+
+snyder_emp %>% group_by(Degree) %>% drop_na() %>% summarize(Average=round(mean(Educational, na.rm=TRUE),2), `Standard Deviation`=round(sd(Educational, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Further_Ed) %>% drop_na() %>% summarize(Average=round(mean(Educational, na.rm=TRUE),2), `Standard Deviation`=round(sd(Educational, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+snyder_emp %>% group_by(Future) %>% drop_na() %>% summarize(Average=round(mean(Educational, na.rm=TRUE),2), `Standard Deviation`=round(sd(Educational, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+```
+
+
+#### Degree vs Future Education
+We also investigated the relationship between Degree and plans for future education. A contigency table is presented below.
+
+```{r, include=TRUE}
+snyder_emp$Degree <- factor(snyder_emp$Degree, levels=c('HS/Associates Degree', 'Bachelors Degree', 'Masters Degree', 'EdD, PhD, JD, or other terminal degree'))
+ed_vs_degree <- with(snyder_emp, table(Further_Ed, Degree))
+ed_vs_degree %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### Factor_Race vs MTL Score
+We also investigated the relationship between race and MTL score. A summary table is presented below.
+
+```{r include=TRUE}
+snyder %>% group_by(Factor_Race) %>% drop_na() %>% summarize(Average=round(mean(MTL, na.rm=TRUE),2), `Standard Deviation`=round(sd(MTL, na.rm=TRUE),2)) %>%
+  kbl() %>%
+  kable_styling()
+
+```
+
+### Question 4: Instrument Internal Consistency
+
+Cronbach's Alpha values were calculated for each scale used (CAS-R, CAS-R subscales, and MTL). Each scale indicated an acceptable level of internal consistency: 
+```{r cronbach}
+#The client also requested that we compute Cronbach's alpha for the CAS-R scales and MTL scale. 
+library(ltm)
+
+# Cronbach's alpha for CAS-R scales
+snyder_CASR <- snyder %>%
+  dplyr::select(Q2_1:Q2_24) %>%
+  na.omit()
+
+snyder_ach <- snyder %>%
+  dplyr::select(Q2_3, Q2_8, Q2_9, Q2_13, Q2_17, Q2_20, Q2_21, Q2_22) %>%
+  na.omit()
+
+snyder_lead <- snyder %>%
+  dplyr::select(Q2_1, Q2_2, Q2_4, Q2_5, Q2_7, Q2_12, Q2_15, Q2_24) %>%
+  na.omit()
+
+snyder_ed <- snyder %>%
+  dplyr::select(Q2_6, Q2_10, Q2_11, Q2_14, Q2_16, Q2_18, Q2_19, Q2_23) %>%
+  na.omit()
+
+snyder_MTL <- snyder %>%
+  dplyr::select(Q4_1:Q4_9) %>%
+  na.omit()
+```
+
+```{r cronbach2, include=TRUE}
+alphas <- unlist(c(cronbach.alpha(snyder_CASR)[1], cronbach.alpha(snyder_ach)[1], cronbach.alpha(snyder_lead)[1], cronbach.alpha(snyder_ed)[1], cronbach.alpha(snyder_MTL)[1]))
+alpha_names <- c("CAS-R", "Achievement", "Leadership", "Educational", "MTL")
+alpha_tab <- bind_cols(Scale=alpha_names, `Cronbach's Alpha`=alphas)
+alpha_tab %>%
+  kbl() %>%
+  kable_styling()
+```
